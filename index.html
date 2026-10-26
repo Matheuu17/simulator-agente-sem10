@@ -5,8 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Simulador de Árboles y Random Forest - USIL</title>
   <!-- Chart.js CDN permitido por la guía -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
   
   <style>
     :root {
@@ -23,7 +22,7 @@
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
       background: var(--bg-slate);
       color: var(--text-main);
       padding: 30px 20px;
@@ -238,18 +237,24 @@
           <option value="extorsion">Riesgo de Extorsión (victima_extorsion)</option>
         </select>
 
+        <p id="case-details" style="font-size:0.85rem; color:var(--text-muted); margin-bottom:16px;"></p>
+
         <label>Profundidad Máxima del Árbol: <strong id="lbl-depth" style="color:var(--primary-navy);">3</strong></label>
         <input type="range" id="rng-depth" min="1" max="10" value="3" oninput="document.getElementById('lbl-depth').innerText=this.value; runLiveML();">
 
         <label>N° Árboles en Random Forest: <strong id="lbl-trees" style="color:var(--primary-navy);">100</strong></label>
         <input type="range" id="rng-trees" min="1" max="200" value="100" oninput="document.getElementById('lbl-trees').innerText=this.value; runLiveML();">
+        <p style="font-size:0.8rem; color:var(--text-muted);">La profundidad limita las preguntas consecutivas de ambos modelos. Más árboles agregan votos al bosque; no garantizan mejores resultados. Semilla 42; mismos 140 registros para entrenar y 60 para probar ambos modelos. En un empate de votos, el bosque elige clase 1.</p>
       </div>
 
       <div class="control-card">
-        <label>Importancia de Variables (Feature Importances):</label>
+        <label>Importancia de Variables — Random Forest:</label>
         <div style="height: 180px; width: 100%; position: relative;">
-          <canvas id="chart-importances"></canvas>
+          <canvas id="chart-importances" role="img" aria-label="Importancia de variables del bosque entrenado"></canvas>
         </div>
+        <p style="font-size:0.8rem; color:var(--text-muted); margin-top:12px;">Reducción de Gini ponderada por los registros de cada nodo, normalizada por árbol y promediada en el bosque. Es una importancia de entrenamiento; no demuestra causalidad.</p>
+        <p id="importance-values" style="font-size:0.8rem; margin-top:8px;"></p>
+        <p id="chart-status" role="status" style="font-size:0.8rem; color:var(--text-muted); margin-top:8px;"></p>
       </div>
     </div>
 
@@ -332,6 +337,18 @@
     return 1 - Math.pow(pos/tot, 2) - Math.pow(neg/tot, 2);
   }
 
+  function categoricalGini(rows, feature) {
+    const groups = new Map();
+    rows.forEach(row => {
+      if (!groups.has(row[feature])) groups.set(row[feature], []);
+      groups.get(row[feature]).push(row);
+    });
+    return [...groups.values()].reduce((sum, group) => {
+      const yes = group.filter(row => row.Phishing === 'Sí').length;
+      return sum + group.length / rows.length * calcGiniBinary(yes, group.length - yes);
+    }, 0);
+  }
+
   function inspectGini(varName, btn) {
     if (btn) {
       document.querySelectorAll('#tab-0 .btn-action').forEach(b => b.classList.remove('active'));
@@ -356,10 +373,12 @@
     }
     html += `</ul><p style="margin-top:12px; font-size:1.05rem;"><strong>Gini Ponderado Global:</strong> <code style="color:var(--primary-navy); font-weight:800; font-size:1.2rem;">${ponderado.toFixed(3)}</code></p>`;
     
-    if (varName === "Urgencia") {
-      html += `<p style="color:var(--success); font-weight:700; margin-top:8px;">✓ Valor óptimo (0.171). Seleccionada matemáticamente como Nodo Raíz.</p>`;
+    const root = ['Urgencia', 'Remitente', 'Adjunto', 'Enlace_corto']
+      .reduce((best, name) => categoricalGini(phishingData, name) < categoricalGini(phishingData, best) ? name : best);
+    if (varName === root) {
+      html += `<p style="color:var(--success); font-weight:700; margin-top:8px;">✓ Menor Gini ponderado (${ponderado.toFixed(3)}). Seleccionada matemáticamente como raíz: ${root}.</p>`;
     } else {
-      html += `<p style="color:var(--danger); font-size:0.85rem; margin-top:8px; font-weight:600;">✗ Impureza alta (${ponderado.toFixed(3)}). No califica como raíz principal.</p>`;
+      html += `<p style="color:var(--danger); font-size:0.85rem; margin-top:8px; font-weight:600;">✗ Gini ponderado mayor que el de ${root}. Se prefiere la variable con menor impureza.</p>`;
     }
     document.getElementById('gini-details').innerHTML = html;
   }
@@ -387,11 +406,13 @@
         &emsp;&emsp;&emsp;├── Desconocido &rarr; <span style="color:var(--success); font-weight:bold;">Phishing = Sí (3/3)</span><br>
         &emsp;&emsp;&emsp;└── Conocido &rarr; <span style="color:var(--success); font-weight:bold;">Phishing = No (2/2)</span>
       `;
+      const medium = phishingData.filter(row => row.Urgencia === 'Media');
+      canvas.innerHTML += `<p style="margin-top:12px; font-size:0.85rem;">En Urgencia Media: Gini = 0.480. Al dividir por Remitente: ${categoricalGini(medium, 'Remitente').toFixed(3)}; Adjunto: ${categoricalGini(medium, 'Adjunto').toFixed(3)}; Enlace corto: ${categoricalGini(medium, 'Enlace_corto').toFixed(3)}. Elegimos Remitente.</p>`;
       rules.innerHTML = `<span class="rule-kw">SI</span> Urgencia == "Alta" <span class="rule-kw">ENTONCES</span> Phishing = Sí<br><span class="rule-kw">SI</span> Urgencia == "Baja" <span class="rule-kw">ENTONCES</span> Phishing = No<br><span class="rule-kw">SI</span> Urgencia == "Media" <span class="rule-kw">Y</span> Remitente == "Desconocido" <span class="rule-kw">ENTONCES</span> Phishing = Sí<br><span class="rule-kw">SI</span> Urgencia == "Media" <span class="rule-kw">Y</span> Remitente == "Conocido" <span class="rule-kw">ENTONCES</span> Phishing = No`;
     } else if (step === 3) {
       buildTreeStep(2);
-      canvas.innerHTML += `<br><br><span style="color:var(--success); font-weight:bold;">✓ Árbol finalizado y podado.</span>`;
-      rules.innerHTML += `<br><span class="rule-kw">EN OTRO CASO</span> Phishing = No`;
+      canvas.innerHTML += `<br><br><span style="color:var(--success); font-weight:bold;">✓ Árbol finalizado: todas las hojas son puras.</span>`;
+      rules.innerHTML += `<br><span class="rule-kw">EN OTRO CASO</span> Phishing = No<br><small>Convención para valores fuera de la tabla; no es una regla aprendida ni garantiza que un correo nuevo sea seguro.</small>`;
     }
   }
 
@@ -407,188 +428,228 @@
     }
   }
 
+  // Cada caso tiene sus propias unidades y una regla probabilística didáctica.
+  // Las probabilidades y los umbrales son supuestos, no estimaciones del mundo real.
+  const caseConfig = {
+    desercion: {
+      labels: ['Promedio', 'Asistencia %', 'Desaprobados', 'Retraso pensión (días)', 'Trabajo (h/semana)'],
+      description: 'Clase 1: deserta. Notas bajas, poca asistencia y varios cursos desaprobados aumentan la probabilidad sintética. Retraso y trabajo son variables adicionales sin efecto directo en esta regla.',
+      features: rng => [rng()*20, rng()*100, Math.floor(rng()*6), rng()*60, rng()*40],
+      probability: f => (f[0]<11.5 ? 0.45:0) + (f[1]<70 ? 0.30:0) + (f[2]>=2 ? 0.20:0)
+    },
+    phishing: {
+      labels: ['URL con IP (0/1)', 'Longitud URL', 'Sin HTTPS (0/1)', 'Enlaces externos %', 'Edad dominio (días)'],
+      description: 'Clase 1: phishing. Se combinan IP en la URL, URL larga, ausencia de HTTPS, enlaces externos y dominio reciente. Son señales ficticias, no garantías de fraude.',
+      features: rng => [Number(rng()<0.3), Math.floor(20+rng()*180), Number(rng()<0.35), rng()*100, Math.floor(rng()*730)],
+      probability: f => 0.03 + 0.25*f[0] + (f[1]>100 ? 0.15:0) + 0.15*f[2] + (f[3]>60 && f[4]<180 ? 0.35:0)
+    },
+    spam: {
+      labels: ['Palabras promocionales', 'Adjunto EXE (0/1)', 'Longitud texto', 'Caracteres extraños %', 'Mayúsculas %'],
+      description: 'Clase 1: spam. Promociones y mayúsculas juntas, adjuntos ejecutables y caracteres extraños aumentan la probabilidad; la longitud actúa junto con las promociones.',
+      features: rng => [Math.floor(rng()*11), Number(rng()<0.15), Math.floor(20+rng()*1980), rng()*30, rng()*100],
+      probability: f => 0.03 + (f[0]>=4 && f[4]>50 ? 0.45:0) + 0.20*f[1] + (f[3]>20 ? 0.15:0) + (f[2]<200 && f[0]>2 ? 0.10:0)
+    },
+    ets: {
+      labels: ['Edad (años)', 'Exposición reportada (0/1)', 'Protección (0/1)', 'Parejas en el año', 'Síntomas (0/1)'],
+      description: 'Clase 1: resultado positivo ficticio de ITS. La regla combina exposición, protección, parejas y síntomas. La edad es una variable adicional. Ejercicio didáctico, sin valor diagnóstico.',
+      features: rng => [Math.floor(18+rng()*48), Number(rng()<0.3), Number(rng()<0.65), Math.floor(rng()*7), Number(rng()<0.25)],
+      probability: f => 0.03 + (f[1] && !f[2] ? 0.40:0) + (f[3]>=3 && !f[2] ? 0.20:0) + 0.30*f[4]
+    },
+    extorsion: {
+      labels: ['Ingresos mensuales', 'Zona comercial (0/1)', 'Denuncias previas', 'Negocio expuesto (0/1)', 'Seguridad (0–10)'],
+      description: 'Clase 1: víctima de extorsión ficticia. La regla usa antecedentes, exposición comercial y seguridad, con una interacción entre ingresos y zona. No estima riesgos reales.',
+      features: rng => [Math.round(1000+rng()*19000), Number(rng()<0.5), Math.floor(rng()*4), Number(rng()<0.5), rng()*10],
+      probability: f => 0.02 + (f[2]>0 ? 0.30:0) + (f[1] && f[0]>10000 ? 0.20:0) + (f[3] && f[4]<4 ? 0.35:0)
+    }
+  };
+
   function generateSyntheticData(topic) {
-    const rng = mulberry32(42); // Semilla fija 42
-    const rows = [];
-    for (let i = 0; i < 200; i++) {
-      let f = [rng()*20, rng()*100, Math.floor(rng()*6), rng()*60, rng()*40];
-      let prob = 0;
-      if (topic === "desercion") prob = (f[0]<11.5 ? 0.45:0) + (f[1]<70 ? 0.3:0) + (f[2]>=2 ? 0.2:0);
-      else prob = (f[0]>10 ? 0.4:0) + (f[1]>50 ? 0.35:0) + (f[2]>3 ? 0.25:0);
-      rows.push({ features: f, target: rng() < prob ? 1 : 0 });
-    }
-    return rows;
+    const rng = mulberry32(42);
+    const config = caseConfig[topic];
+    if (!config) throw new Error('Caso desconocido');
+    return Array.from({ length: 200 }, () => {
+      const features = config.features(rng);
+      const probability = Math.max(0, Math.min(1, config.probability(features)));
+      return { features, target: Number(rng() < probability) };
+    });
   }
 
-  // Motor Algorítmico CART
-  function getGini(groups, classes) {
-    let n = groups[0].length + groups[1].length;
-    let gini = 0.0;
-    for (let group of groups) {
-      let size = group.length;
-      if (size === 0) continue;
-      let score = 0.0;
-      for (let c of classes) {
-        let p = group.filter(r => r.target === c).length / size;
-        score += p * p;
-      }
-      gini += (1.0 - score) * (size / n);
+  function splitDataset(rows) {
+    const shuffled = rows.slice();
+    const rng = mulberry32(42);
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
-    return gini;
+    return { trainData: shuffled.slice(0, 140), testData: shuffled.slice(140) };
   }
 
-  function getSplit(dataset) {
-    let b_index = 0, b_value = 0, b_score = 999, b_groups = null;
-    for (let i = 0; i < 5; i++) {
-      for (let row of dataset) {
-        let groups = [[], []];
-        let val = row.features[i];
-        for (let r of dataset) {
-          if (r.features[i] < val) groups[0].push(r); else groups[1].push(r);
-        }
-        let gini = getGini(groups, [0, 1]);
-        if (gini < b_score) {
-          b_index = i; b_value = val; b_score = gini; b_groups = groups;
+  function getGini(groups) {
+    const total = groups.reduce((n, group) => n + group.length, 0);
+    return total === 0 ? 0 : groups.reduce((score, group) => {
+      const positive = group.reduce((n, row) => n + row.target, 0);
+      return score + group.length / total * calcGiniBinary(positive, group.length - positive);
+    }, 0);
+  }
+
+  function randomFeatures(count, maxFeatures, rng) {
+    const indices = Array.from({ length: count }, (_, i) => i);
+    // Fisher–Yates: sin reemplazo, se vuelve a sortear en CADA nodo.
+    for (let i = count - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [indices[i], indices[j]] = [indices[j], indices[i]];
+    }
+    return indices.slice(0, maxFeatures);
+  }
+
+  function getSplit(dataset, features) {
+    let best = null;
+    const n = dataset.length;
+    const positives = dataset.reduce((sum, row) => sum + row.target, 0);
+    // Acumular conteos sobre valores ordenados evita probar O(n²) particiones.
+    for (const index of features) {
+      const sorted = dataset.slice().sort((a, b) => a.features[index] - b.features[index]);
+      let leftPositive = 0;
+      for (let j = 1; j < n; j++) {
+        leftPositive += sorted[j - 1].target;
+        const low = sorted[j - 1].features[index], high = sorted[j].features[index];
+        if (low === high) continue;
+        const rightPositive = positives - leftPositive;
+        const score = j/n * calcGiniBinary(leftPositive, j-leftPositive)
+          + (n-j)/n * calcGiniBinary(rightPositive, n-j-rightPositive);
+        if (!best || score < best.score - 1e-12) {
+          best = { index, value: low + (high-low)/2, score };
         }
       }
     }
-    return { index: b_index, value: b_value, groups: b_groups };
+    return best;
   }
 
   function toTerminal(group) {
-    let counts = {0: 0, 1: 0};
-    group.forEach(r => counts[r.target]++);
-    return counts[1] > counts[0] ? 1 : 0;
+    return Number(group.reduce((n, row) => n + row.target, 0) > group.length / 2);
   }
 
-  function splitNode(node, max_depth, depth) {
-    let left = node.groups[0], right = node.groups[1];
-    delete node.groups;
-    if (!left.length || !right.length) {
-      node.left = node.right = toTerminal(left.length ? left : right);
-      return;
+  function buildTree(dataset, maxDepth, rng = null, maxFeatures = dataset[0].features.length) {
+    const featureCount = dataset[0].features.length;
+    function grow(rows, depth) {
+      const positives = rows.reduce((n, row) => n + row.target, 0);
+      const impurity = calcGiniBinary(positives, rows.length - positives);
+      if (depth >= maxDepth || impurity === 0 || rows.length < 2) return toTerminal(rows);
+      const features = rng ? randomFeatures(featureCount, maxFeatures, rng)
+        : Array.from({ length: featureCount }, (_, i) => i);
+      const split = getSplit(rows, features);
+      if (!split || impurity - split.score <= 1e-12) return toTerminal(rows);
+      const left = rows.filter(row => row.features[split.index] < split.value);
+      const right = rows.filter(row => row.features[split.index] >= split.value);
+      return {
+        index: split.index, value: split.value,
+        // Reducción ponderada respecto al total del árbol (incluye repeticiones bootstrap).
+        importance: rows.length / dataset.length * (impurity - split.score),
+        left: grow(left, depth + 1), right: grow(right, depth + 1)
+      };
     }
-    if (depth >= max_depth) {
-      node.left = toTerminal(left);
-      node.right = toTerminal(right);
-      return;
-    }
-    node.left = getSplit(left);
-    splitNode(node.left, max_depth, depth + 1);
-    node.right = getSplit(right);
-    splitNode(node.right, max_depth, depth + 1);
-  }
-
-  function buildTree(dataset, max_depth) {
-    let root = getSplit(dataset);
-    splitNode(root, max_depth, 1);
-    return root;
+    return grow(dataset, 0);
   }
 
   function predictTree(node, row) {
-    if (typeof node === 'number') return node;
-    if (row.features[node.index] < node.value) {
-      return (typeof node.left === 'number') ? node.left : predictTree(node.left, row);
-    } else {
-      return (typeof node.right === 'number') ? node.right : predictTree(node.right, row);
+    while (typeof node !== 'number') {
+      node = row.features[node.index] < node.value ? node.left : node.right;
     }
+    return node;
   }
 
-  function trainRandomForest(dataset, max_depth, n_trees) {
-    let trees = [];
-    for (let i = 0; i < n_trees; i++) {
-      let sample = [];
-      for (let j = 0; j < dataset.length; j++) sample.push(dataset[Math.floor(Math.random() * dataset.length)]);
-      trees.push(buildTree(sample, max_depth));
+  function treeImportances(tree, featureCount) {
+    const values = Array(featureCount).fill(0);
+    function visit(node) {
+      if (typeof node === 'number') return;
+      values[node.index] += node.importance;
+      visit(node.left);
+      visit(node.right);
     }
-    return function(row) {
-      let votes = 0;
-      trees.forEach(tree => votes += predictTree(tree, row));
-      return (votes / n_trees) >= 0.5 ? 1 : 0;
+    visit(tree);
+    const total = values.reduce((a, b) => a + b, 0);
+    return values.map(value => total ? value / total : 0);
+  }
+
+  function trainRandomForest(dataset, maxDepth, nTrees, seed = 42) {
+    const trees = [];
+    const featureCount = dataset[0].features.length;
+    const maxFeatures = Math.max(1, Math.floor(Math.sqrt(featureCount)));
+    for (let i = 0; i < nTrees; i++) {
+      // Semilla independiente por árbol: aumentar el control conserva los árboles previos.
+      const rng = mulberry32((seed + Math.imul(i, 0x9E3779B9)) >>> 0);
+      const sample = Array.from({ length: dataset.length }, () => dataset[Math.floor(rng() * dataset.length)]);
+      trees.push(buildTree(sample, maxDepth, rng, maxFeatures));
+    }
+    let importances = Array(featureCount).fill(0);
+    trees.forEach(tree => treeImportances(tree, featureCount).forEach((value, i) => importances[i] += value / nTrees));
+    const total = importances.reduce((a, b) => a + b, 0);
+    importances = importances.map(value => total ? value / total : 0);
+    return {
+      trees, importances,
+      predict: row => Number(trees.reduce((votes, tree) => votes + predictTree(tree, row), 0) >= nTrees / 2)
     };
   }
 
-  function evaluateModel(predictFn, dataset, isSingleTree) {
+  function evaluateModel(predict, dataset) {
     let vn = 0, fp = 0, fn = 0, vp = 0;
     dataset.forEach(row => {
-      const pred = isSingleTree ? predictTree(predictFn, row) : predictFn(row);
-      if (row.target === 0 && pred === 0) vn++;
-      else if (row.target === 0 && pred === 1) fp++;
-      else if (row.target === 1 && pred === 0) fn++;
-      else if (row.target === 1 && pred === 1) vp++;
+      const prediction = predict(row);
+      if (row.target === 0 && prediction === 0) vn++;
+      else if (row.target === 0 && prediction === 1) fp++;
+      else if (row.target === 1 && prediction === 0) fn++;
+      else vp++;
     });
-    const acc = ((vn + vp) / dataset.length) * 100;
-    const rec = vp + fn === 0 ? 0 : (vp / (vp + fn)) * 100;
-    const prec = vp + fp === 0 ? 0 : (vp / (vp + fp));
-    const f1 = (prec + (rec/100)) === 0 ? 0 : (2 * (prec * (rec/100)) / (prec + (rec/100)));
-    return { acc: acc.toFixed(1), rec: rec.toFixed(1), f1: f1.toFixed(2), vn, fp, fn, vp };
+    const acc = (vn + vp) / dataset.length * 100;
+    const rec = vp + fn ? vp / (vp + fn) * 100 : 0;
+    const f1 = 2*vp + fp + fn ? 2*vp / (2*vp + fp + fn) : 0;
+    return { acc, rec, f1, vn, fp, fn, vp };
   }
 
   let chartObj = null;
 
   function runLiveML() {
     const topic = document.getElementById('sel-topic').value;
-    const depth = parseInt(document.getElementById('rng-depth').value);
-    const trees = parseInt(document.getElementById('rng-trees').value);
-
-    // 1. Data Split
-    const allData = generateSyntheticData(topic);
-    const trainData = allData.slice(0, 140);
-    const testData = allData.slice(140);
-
-    // 2. Train Models in JS
-    const treeModel = buildTree(trainData, depth);
-    const rfPredictor = trainRandomForest(trainData, depth, trees);
-
-    // 3. Evaluate
-    const trTrain = evaluateModel(treeModel, trainData, true);
-    const trTest = evaluateModel(treeModel, testData, true);
-    const rfTrain = evaluateModel(rfPredictor, trainData, false);
-    const rfTest = evaluateModel(rfPredictor, testData, false);
-
-    // 4. Update DOM metrics
-    const updateCard = (prefix, metrics) => {
-      document.getElementById(`m-${prefix}-train`).innerText = `${metrics.acc}%`;
-      document.getElementById(`m-${prefix}-test`).innerText = `${metrics.acc}%`;
-      document.getElementById(`m-${prefix}-rec`).innerText = `${metrics.rec}%`;
-      document.getElementById(`m-${prefix}-f1`).innerText = metrics.f1;
-      document.getElementById(`m-${prefix}-vn`).innerText = metrics.vn;
-      document.getElementById(`m-${prefix}-fp`).innerText = metrics.fp;
-      document.getElementById(`m-${prefix}-fn`).innerText = metrics.fn;
-      document.getElementById(`m-${prefix}-vp`).innerText = metrics.vp;
+    const depth = Number(document.getElementById('rng-depth').value);
+    const count = Number(document.getElementById('rng-trees').value);
+    const { trainData, testData } = splitDataset(generateSyntheticData(topic));
+    const tree = buildTree(trainData, depth);
+    const forest = trainRandomForest(trainData, depth, count);
+    const updateCard = (prefix, predict) => {
+      const train = evaluateModel(predict, trainData);
+      const test = evaluateModel(predict, testData);
+      document.getElementById(`m-${prefix}-train`).innerText = `${train.acc.toFixed(1)}%`;
+      document.getElementById(`m-${prefix}-test`).innerText = `${test.acc.toFixed(1)}%`;
+      document.getElementById(`m-${prefix}-rec`).innerText = `${test.rec.toFixed(1)}%`;
+      document.getElementById(`m-${prefix}-f1`).innerText = test.f1.toFixed(2);
+      for (const metric of ['vn', 'fp', 'fn', 'vp']) {
+        document.getElementById(`m-${prefix}-${metric}`).innerText = test[metric];
+      }
     };
-
-    updateCard('tree', trTest);
-    document.getElementById('m-tree-train').innerText = `${trTrain.acc}%`;
-    
-    updateCard('rf', rfTest);
-    document.getElementById('m-rf-train').innerText = `${rfTrain.acc}%`;
-
-    // 5. Update Feature Importance Chart
-    updateImportanceChart(topic);
+    updateCard('tree', row => predictTree(tree, row));
+    updateCard('rf', forest.predict);
+    document.getElementById('case-details').innerText = caseConfig[topic].description;
+    updateImportanceChart(topic, forest.importances);
   }
 
-  function updateImportanceChart(topic) {
-    const labelsMap = {
-      desercion: ['Promedio', 'Asistencia %', 'Desaprobados', 'Retraso Pensión', 'Hrs Trabajo'],
-      phishing: ['URL IP', 'Longitud URL', 'Prefijo HTTP', 'Enlaces ancla', 'Antigüedad Dom'],
-      spam: ['Keywords', 'Adjunto EXE', 'Longitud Text', 'Chars raros', 'Mayúsculas %'],
-      ets: ['Edad', 'Cond. Riesgo', 'Protección', 'Parejas año', 'Síntomas'],
-      extorsion: ['Ingresos', 'Zona Comercial', 'Denuncias Prev', 'Rubro', 'Seguridad']
-    };
+  function updateImportanceChart(topic, importances) {
+    const labels = caseConfig[topic].labels;
+    document.getElementById('importance-values').innerText = labels.map((label, i) => `${label}: ${(importances[i]*100).toFixed(1)}%`).join(' · ');
+    if (typeof Chart === 'undefined') {
+      // Si el CDN no responde, las métricas y los valores textuales siguen funcionando.
+      document.getElementById('chart-status').innerText = 'No se pudo cargar Chart.js. Las importancias calculadas se muestran arriba.';
+      return;
+    }
+    document.getElementById('chart-status').innerText = '';
     const ctx = document.getElementById('chart-importances').getContext('2d');
     if (chartObj) chartObj.destroy();
-    
     chartObj = new Chart(ctx, {
       type: 'bar',
-      data: {
-        labels: labelsMap[topic] || labelsMap.desercion,
-        datasets: [{ data: [0.38, 0.24, 0.18, 0.12, 0.08], backgroundColor: '#002060', borderRadius: 4 }]
-      },
+      data: { labels, datasets: [{ data: importances, backgroundColor: '#002060', borderRadius: 4 }] },
       options: {
-        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        indexAxis: 'y', responsive: true, maintainAspectRatio: false, animation: false,
         plugins: { legend: { display: false } },
-        scales: { x: { beginAtZero: true, max: 0.5 } }
+        scales: { x: { beginAtZero: true, max: 1 } }
       }
     });
   }
